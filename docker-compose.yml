@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    volumes:
+      - ./storage:/app/storage
+    expose:
+      - "8000"
+    restart: unless-stopped
+  nginx:
+    image: nginx:latest
+    ports:
+      - "8085:80"
+    volumes:
+      - ./storage:/etc/nginx/html/media:rw
+      - ./web:/etc/nginx/html:rw
+      - ./nginx:/etc/nginx/conf.d/:rw
+    depends_on:
+      - backend
+    restart: unless-stopped

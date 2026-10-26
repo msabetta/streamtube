@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreamTube · Gestione</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <main class="page">
+    <section class="panel">
+      <h2>Carica un video</h2>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="video/*" hidden>
+        <strong>Trascina un video qui</strong><br>
+        <span class="muted">oppure clicca per sceglierlo</span>
+      </label>
+      <p class="file-name" id="fileName"></p>
+      <button id="uploadBtn" disabled>Carica e transcodifica</button>
+      <div class="progress" id="progress"><div></div></div>
+      <p class="status" id="uploadMsg"></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Video caricati</h2>
+        <button class="ghost sm" id="refreshBtn">Aggiorna</button>
+      </div>
+      <div id="listWrap"></div>
+    </section>
+  </main>
+
+  <script src="/assets/nav.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const dz = $("dropzone"), fi = $("fileInput"), fn = $("fileName");
+    const ub = $("uploadBtn"), pg = $("progress"), bar = pg.firstElementChild;
+    const msg = $("uploadMsg"), wrap = $("listWrap");
+    const LABELS = { ready: "pronto", processing: "in elaborazione", failed: "fallito", interrupted: "interrotto" };
+    const VIDEO_RE = /\.(mp4|mov|mkv|webm|avi)$/i;
+    let items = [];
+
+    function setMsg(text, kind = "") {
+      msg.textContent = text;
+      msg.className = `status ${kind}`;
+    }
+
+    function setFile(f) {
+      if (f && !VIDEO_RE.test(f.name)) {
+        toast("Formato non supportato. Usa MP4, MOV, MKV, WEBM o AVI.", "err");
+        f = null;
+        fi.value = "";
+      }
+      ub.disabled = !f;
+      fn.textContent = f ? `${f.name} · ${(f.size / 1048576).toFixed(1)} MB` : "";
+      setMsg("");
+    }
+
+    // Selezione e drag & drop
+    fi.onchange = () => setFile(fi.files[0]);
+    ["dragenter", "dragover"].forEach(ev =>
+      dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add("over"); }));
+    ["dragleave", "drop"].forEach(ev =>
+      dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove("over"); }));
+    dz.addEventListener("drop", e => {
+      const f = e.dataTransfer.files[0];
+      if (!f) return;
+      const dt = new DataTransfer();
+      dt.items.add(f);
+      fi.files = dt.files;
+      setFile(f);
+    });
+
+    // Upload con progresso (fetch non lo espone, quindi XHR)
+    function sendUpload(file) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const form = new FormData();
+        form.append("video", file);
+        xhr.upload.onprogress = e => {
+          if (e.lengthComputable) bar.style.width = `${(e.loaded / e.total) * 100}%`;
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(JSON.parse(xhr.responseText));
+          } else {
+            let detail = `HTTP ${xhr.status}`;
+            try { detail = JSON.parse(xhr.responseText).detail || detail; } catch {}
+            reject(new Error(detail));
+          }
+        };
+        xhr.onerror = () => reject(new Error("connessione persa"));
+        xhr.open("POST", "/api/upload");
+        xhr.send(form);
+      });
+    }
+
+    ub.onclick = async () => {
+      const f = fi.files[0];
+      if (!f) return;
+      ub.disabled = true;
+      pg.style.display = "block";
+      bar.style.width = "0%";
+      setMsg("Caricamento in corso...");
+      try {
+        await sendUpload(f);
+        setMsg("Caricato. La transcodifica è in corso.", "ok");
+        toast("Video caricato, transcodifica avviata.", "ok");
+        fi.value = "";
+        setFile(null);
+        await refresh();
+      } catch (err) {
+        setMsg("");
+        toast(`Errore: ${err.message}`, "err");
+        ub.disabled = false;
+      } finally {
+        pg.style.display = "none";
+      }
+    };
+
+    // Elenco
+    async function refresh() {
+      try {
+        items = await (await fetch("/api/videos")).json();
+        render();
+      } catch (err) {
+        wrap.innerHTML = `<p class="empty">Impossibile caricare l'elenco.</p>`;
+        console.error(err);
+      }
+    }
+
+    async function remove(v) {
+      if (!confirm(`Eliminare "${v.title}"? L'operazione non si può annullare.`)) return;
+      try {
+        const r = await fetch(`/api/videos/${encodeURIComponent(v.id)}`, { method: "DELETE" });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          throw new Error(e.detail || `HTTP ${r.status}`);
+        }
+        toast(`"${v.title}" eliminato.`, "ok");
+      } catch (err) {
+        toast(`Eliminazione non riuscita: ${err.message}`, "err");
+      }
+      await refresh();
+    }
+
+    function cell(text, cls = "") {
+      const td = document.createElement("td");
+      td.className = cls;
+      td.textContent = text;
+      return td;
+    }
+
+    function render() {
+      if (!items.length) {
+        wrap.innerHTML = `<p class="empty">Nessun video caricato.</p>`;
+        return;
+      }
+      const table = document.createElement("table");
+      table.innerHTML = "<thead><tr><th>Titolo</th><th>Caricato</th><th>Stato</th><th></th></tr></thead>";
+      const tbody = document.createElement("tbody");
+
+      for (const v of items) {
+        const tr = document.createElement("tr");
+
+        const st = document.createElement("td");
+        const badge = document.createElement("span");
+        badge.className = `badge ${v.status}`;
+        badge.textContent = LABELS[v.status] || v.status;
+        st.append(badge);
+
+        const act = document.createElement("td");
+        act.className = "right";
+        const watch = document.createElement("button");
+        watch.className = "ghost sm";
+        watch.textContent = "Guarda";
+        watch.disabled = v.status !== "ready";
+        watch.onclick = () => location.href = `/?v=${encodeURIComponent(v.id)}`;
+        const del = document.createElement("button");
+        del.className = "danger sm";
+        del.textContent = "Elimina";
+        del.disabled = v.status === "processing";
+        del.onclick = () => remove(v);
+        act.append(watch, del);
+
+        const date = v.created_at
+          ? new Date(v.created_at).toLocaleString("it-IT", { dateStyle: "short", timeStyle: "short" })
+          : "";
+        tr.append(cell(v.title, "title"), cell(date, "muted"), st, act);
+        tbody.append(tr);
+      }
+      table.append(tbody);
+      wrap.replaceChildren(table);
+    }
+
+    $("refreshBtn").onclick = refresh;
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreamTube · Guarda</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <style>
+    .player-wrap { background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; }
+    video { width: 100%; height: 100%; display: block; }
+    .now { margin: .9rem 0 .2rem; font-size: 1.1rem; }
+    .now-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; }
+    .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+    .card { display: flex; flex-direction: column; gap: .35rem; padding: .7rem .9rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+    .card.active { border-color: var(--accent); }
+    .card-title { background: none; padding: 0; margin: 0; text-align: left; color: var(--text); font-size: .95rem; font-weight: 600; }
+    .card-title:disabled { color: var(--muted); cursor: default; }
+    .card-meta { display: flex; justify-content: space-between; align-items: center; gap: .5rem; font-size: .8rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="split">
+      <section class="panel">
+        <div class="player-wrap"><video id="player" controls playsinline></video></div>
+        <h3 class="now" id="now">Nessun video selezionato</h3>
+        <p class="muted" id="hint">Scegli un video dall'elenco.</p>
+        <div class="now-actions" id="actions" hidden>
+          <button class="ghost sm" id="copyBtn">Copia link</button>
+        </div>
+      </section>
+
+      <aside class="panel">
+        <div class="panel-head">
+          <h2>Video</h2>
+          <button class="ghost sm" id="refreshBtn">Aggiorna</button>
+        </div>
+        <ul class="list" id="list"></ul>
+      </aside>
+    </div>
+  </main>
+
+  <script src="/assets/nav.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const video = $("player"), list = $("list"), now = $("now");
+    const hint = $("hint"), actions = $("actions");
+    const LABELS = { ready: "pronto", processing: "in elaborazione", failed: "fallito", interrupted: "interrotto" };
+    let hls = null, activeId = null, items = [];
+
+    function play(v) {
+      if (hls) { hls.destroy(); hls = null; }
+      activeId = v.id;
+      now.textContent = v.title;
+      hint.hidden = true;
+      actions.hidden = false;
+      history.replaceState(null, "", `/?v=${encodeURIComponent(v.id)}`);
+
+      if (typeof Hls !== "undefined" && Hls.isSupported()) {
+        hls = new Hls();
+        hls.loadSource(v.playlist);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.ERROR, (_, d) => {
+          if (d.fatal) toast(`Errore di riproduzione: ${d.details}`, "err");
+        });
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = v.playlist;
+      } else {
+        toast("Browser non supportato o hls.js non caricato.", "err");
+      }
+      render();
+    }
+
+    function render() {
+      list.replaceChildren();
+      if (!items.length) {
+        list.innerHTML = `<li class="empty">Nessun video. <a href="/upload.html">Caricane uno</a>.</li>`;
+        return;
+      }
+      for (const v of items) {
+        const li = document.createElement("li");
+        li.className = "card" + (v.id === activeId ? " active" : "");
+
+        const title = document.createElement("button");
+        title.className = "card-title";
+        title.textContent = v.title;
+        title.disabled = v.status !== "ready";
+        title.onclick = () => play(v);
+
+        const meta = document.createElement("div");
+        meta.className = "card-meta";
+        const date = document.createElement("span");
+        date.textContent = v.created_at
+          ? new Date(v.created_at).toLocaleString("it-IT", { dateStyle: "short", timeStyle: "short" })
+          : "";
+        const badge = document.createElement("span");
+        badge.className = `badge ${v.status}`;
+        badge.textContent = LABELS[v.status] || v.status;
+
+        meta.append(date, badge);
+        li.append(title, meta);
+        list.append(li);
+      }
+    }
+
+    async function refresh() {
+      try {
+        items = await (await fetch("/api/videos")).json();
+        render();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    $("copyBtn").onclick = async () => {
+      await navigator.clipboard.writeText(`${location.origin}/?v=${encodeURIComponent(activeId)}`);
+      toast("Link copiato.", "ok");
+    };
+    $("refreshBtn").onclick = refresh;
+
+    // Apre il video indicato in ?v=<id>, se presente
+    const requested = new URLSearchParams(location.search).get("v");
+    refresh().then(() => {
+      if (!requested) return;
+      const v = items.find(x => x.id === requested);
+      if (v && v.status === "ready") play(v);
+      else toast("Video non disponibile.", "err");
+    });
+    setInterval(refresh, 15000);
+  </script>
+</body>
+</html>
